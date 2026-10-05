@@ -1,93 +1,113 @@
 // Export comptable des commandes, lancé chaque nuit par le cabinet comptable.
 // Ne pas toucher : ça marche. (JM, 2021)
-var TVA = 0.2;
+const TVA = 0.2;
+const ENTETE_CSV = 'numero;date;client;ville;nb_lignes;total_ht;total_ttc\n';
 
-function requete(db, sql, params, cb) {
-  setImmediate(function () {
-    var resultat;
+function requete(db, sql, params, callback) {
+  setImmediate(() => {
+    let resultat;
     try {
-      var stmt = db.prepare(sql);
-      resultat = stmt.all.apply(stmt, params);
-    } catch (e) {
-      cb(e);
+      const stmt = db.prepare(sql);
+      resultat = stmt.all(...params);
+    } catch (error) {
+      callback(error);
       return;
     }
-    cb(null, resultat);
+    callback(null, resultat);
   });
 }
 
 function formaterMontant(montant) {
-  var arrondi = Math.round(montant * 100) / 100;
-  var texte = String(arrondi);
-  if (texte.indexOf('.') == -1) {
-    return texte + ',00';
+  const arrondi = Math.round(montant * 100) / 100;
+  const texte = String(arrondi);
+  if (texte.indexOf('.') === -1) {
+    return `${texte},00`;
   }
-  var parties = texte.split('.');
-  if (parties[1].length == 1) {
-    parties[1] = parties[1] + '0';
+  const parties = texte.split('.');
+  if (parties[1].length === 1) {
+    parties[1] += '0';
   }
-  return parties[0] + ',' + parties[1];
+  return `${parties[0]},${parties[1]}`;
 }
 
-function exporterCommandes(db, depuis, callback) {
-  var csv = 'numero;date;client;ville;nb_lignes;total_ht;total_ttc\n';
-  requete(db, 'SELECT * FROM commandes WHERE date >= ? ORDER BY date, id', [depuis], function (err, commandes) {
-    if (err) {
-      callback(err);
+function indexerLignes(lignes) {
+  const totauxParCommande = new Map();
+  for (const ligne of lignes) {
+    let resume = totauxParCommande.get(ligne.commande_id);
+    if (!resume) {
+      resume = { nb: 0, total: 0 };
+      totauxParCommande.set(ligne.commande_id, resume);
+    }
+    resume.nb += 1;
+    resume.total += ligne.quantite * ligne.prix_unitaire;
+  }
+  return totauxParCommande;
+}
+
+function indexerClients(clients) {
+  return new Map(clients.map((client) => [client.id, client]));
+}
+
+function formaterChamp(valeur) {
+  return valeur.replace(/;/g, ',');
+}
+
+function formaterCommande(commande, client, resume) {
+  const nbLignes = resume ? resume.nb : 0;
+  const total = resume ? resume.total : 0;
+  const nom = client ? formaterChamp(client.nom) : 'INCONNU';
+  const ville = client ? formaterChamp(client.ville) : '';
+  const totalHt = formaterMontant(total);
+  const totalTtc = formaterMontant(total * (1 + TVA));
+  return `${commande.id};${commande.date};${nom};${ville};${nbLignes};${totalHt};${totalTtc}\n`;
+}
+
+function genererCsv(commandes, clientsParId, totauxParCommande) {
+  const actifs = new Set();
+  let csv = ENTETE_CSV;
+  for (const commande of commandes) {
+    if (commande.statut === 'annulee') {
+      continue;
+    }
+    csv += formaterCommande(
+      commande,
+      clientsParId.get(commande.client_id),
+      totauxParCommande.get(commande.id),
+    );
+    actifs.add(commande.client_id);
+  }
+  return `${csv}# clients actifs;${actifs.size}\n`;
+}
+
+function chargerClients(db, commandes, lignes, callback) {
+  requete(db, 'SELECT * FROM clients', [], (error, clients) => {
+    if (error) {
+      callback(error);
       return;
     }
-    requete(db, 'SELECT * FROM lignes_commande', [], function (err2, lignes) {
-      if (err2) {
-        callback(err2);
-        return;
-      }
-      requete(db, 'SELECT * FROM clients', [], function (err3, clients) {
-        if (err3) {
-          callback(err3);
-          return;
-        }
-        var clientsParId = new Map();
-        for (var k = 0; k < clients.length; k++) {
-          clientsParId.set(clients[k].id, clients[k]);
-        }
-        var totauxParCommande = new Map();
-        for (var j = 0; j < lignes.length; j++) {
-          var resume = totauxParCommande.get(lignes[j].commande_id);
-          if (!resume) {
-            resume = { nb: 0, tot: 0 };
-            totauxParCommande.set(lignes[j].commande_id, resume);
-          }
-          resume.nb = resume.nb + 1;
-          resume.tot = resume.tot + lignes[j].quantite * lignes[j].prix_unitaire;
-        }
-        var actifs = new Set();
-        for (var i = 0; i < commandes.length; i++) {
-          var c = commandes[i];
-          if (c.statut == 'annulee') {
-            continue;
-          }
-          var cl = clientsParId.get(c.client_id) || null;
-          var totaux = totauxParCommande.get(c.id);
-          var nb = totaux ? totaux.nb : 0;
-          var tot = totaux ? totaux.tot : 0;
-          var htTxt = formaterMontant(tot);
-          var ttcTxt = formaterMontant(tot * (1 + TVA));
-          var nom = cl ? cl.nom : 'INCONNU';
-          if (nom.indexOf(';') != -1) {
-            nom = nom.replace(/;/g, ',');
-          }
-          var ville = cl ? cl.ville : '';
-          if (ville.indexOf(';') != -1) {
-            ville = ville.replace(/;/g, ',');
-          }
-          csv = csv + c.id + ';' + c.date + ';' + nom + ';' + ville + ';' + nb + ';' + htTxt + ';' + ttcTxt + '\n';
-          actifs.add(c.client_id);
-        }
-        csv = csv + '# clients actifs;' + actifs.size + '\n';
-        callback(null, csv);
-      });
-    });
+    const csv = genererCsv(commandes, indexerClients(clients), indexerLignes(lignes));
+    callback(null, csv);
   });
 }
 
-module.exports = { exporterCommandes: exporterCommandes };
+function chargerLignes(db, commandes, callback) {
+  requete(db, 'SELECT * FROM lignes_commande', [], (error, lignes) => {
+    if (error) {
+      callback(error);
+      return;
+    }
+    chargerClients(db, commandes, lignes, callback);
+  });
+}
+
+function exporterCommandes(db, depuis, callback) {
+  requete(db, 'SELECT * FROM commandes WHERE date >= ? ORDER BY date, id', [depuis], (error, commandes) => {
+    if (error) {
+      callback(error);
+      return;
+    }
+    chargerLignes(db, commandes, callback);
+  });
+}
+
+module.exports = { exporterCommandes };
