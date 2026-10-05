@@ -46,26 +46,30 @@ function exporterCommandes(db, depuis, callback) {
           callback(err3);
           return;
         }
-        var actifs = [];
+        var clientsParId = new Map();
+        for (var k = 0; k < clients.length; k++) {
+          clientsParId.set(clients[k].id, clients[k]);
+        }
+        var totauxParCommande = new Map();
+        for (var j = 0; j < lignes.length; j++) {
+          var resume = totauxParCommande.get(lignes[j].commande_id);
+          if (!resume) {
+            resume = { nb: 0, tot: 0 };
+            totauxParCommande.set(lignes[j].commande_id, resume);
+          }
+          resume.nb = resume.nb + 1;
+          resume.tot = resume.tot + lignes[j].quantite * lignes[j].prix_unitaire;
+        }
+        var actifs = new Set();
         for (var i = 0; i < commandes.length; i++) {
           var c = commandes[i];
-          var cl = null;
-          for (var k = 0; k < clients.length; k++) {
-            if (clients[k].id == c.client_id) {
-              cl = clients[k];
-            }
-          }
-          var nb = 0;
-          var tot = 0;
-          for (var j = 0; j < lignes.length; j++) {
-            if (lignes[j].commande_id == c.id) {
-              nb = nb + 1;
-              tot = tot + lignes[j].quantite * lignes[j].prix_unitaire;
-            }
-          }
           if (c.statut == 'annulee') {
             continue;
           }
+          var cl = clientsParId.get(c.client_id) || null;
+          var totaux = totauxParCommande.get(c.id);
+          var nb = totaux ? totaux.nb : 0;
+          var tot = totaux ? totaux.tot : 0;
           var htTxt = formaterMontant(tot);
           var ttcTxt = formaterMontant(tot * (1 + TVA));
           var nom = cl ? cl.nom : 'INCONNU';
@@ -77,17 +81,9 @@ function exporterCommandes(db, depuis, callback) {
             ville = ville.replace(/;/g, ',');
           }
           csv = csv + c.id + ';' + c.date + ';' + nom + ';' + ville + ';' + nb + ';' + htTxt + ';' + ttcTxt + '\n';
-          var deja = false;
-          for (var m = 0; m < actifs.length; m++) {
-            if (actifs[m] == c.client_id) {
-              deja = true;
-            }
-          }
-          if (!deja) {
-            actifs.push(c.client_id);
-          }
+          actifs.add(c.client_id);
         }
-        csv = csv + '# clients actifs;' + actifs.length + '\n';
+        csv = csv + '# clients actifs;' + actifs.size + '\n';
         callback(null, csv);
       });
     });
