@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  qualite:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Node 24 avec cache npm
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Installation des dépendances
+        run: npm ci
+
+      - name: Lint (aucun avertissement toléré)
+        run: npm run lint -- --max-warnings=0
+
+      - name: Tests
+        run: npm test
+
+      - name: Couverture du calcul des devis (80 % lignes et branches)
+        run: >-
+          node --test --experimental-test-coverage
+          --test-coverage-include='src/devis/**'
+          --test-coverage-lines=80
+          --test-coverage-branches=80
