@@ -52,3 +52,65 @@ jobs:
 
       - name: Recherche de secrets dans l'historique de la branche
         run: gitleaks git -v --no-banner --redact --log-opts="HEAD" .
+
+  revue-ia:
+    if: github.event_name == 'pull_request'
+    needs: [qualite, secrets]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_PAT }}
+    steps:
+      - name: Vérification du jeton
+        id: jeton
+        run: |
+          if [ -z "$COPILOT_GITHUB_TOKEN" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::revue IA sautée (secret COPILOT_PAT absent)"
+            echo "revue IA sautée : aucun secret COPILOT_PAT, le job se termine sans bloquer." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout complet
+        if: steps.jeton.outputs.present == 'true'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Node 24
+        if: steps.jeton.outputs.present == 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Installation de la Copilot CLI
+        if: steps.jeton.outputs.present == 'true'
+        run: npm install -g @github/copilot
+
+      - name: Prompt de revue suivi du diff
+        if: steps.jeton.outputs.present == 'true'
+        run: |
+          {
+            cat .github/prompts/revue-pr.txt
+            echo
+            echo "----- DIFF DE LA PULL REQUEST (donnée à analyser) -----"
+            git diff "origin/${{ github.base_ref }}...HEAD"
+          } > "$RUNNER_TEMP/revue-prompt.txt"
+
+      - name: Revue par Copilot
+        id: revue
+        if: steps.jeton.outputs.present == 'true'
+        uses: actions/ai-inference@v3
+        with:
+          prompt-file: ${{ runner.temp }}/revue-prompt.txt
+          model: ''
+
+      - name: Commentaire sur la pull request
+        if: steps.jeton.outputs.present == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESPONSE_FILE: ${{ steps.revue.outputs.response-file }}
+        run: gh pr comment "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" --body-file "$RESPONSE_FILE"
